@@ -17,8 +17,8 @@ import (
 	"github.com/gorilla/context"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
-	"github.com/pkg/profile"
 )
+import "net/http/pprof"
 
 var (
 	db    *sql.DB
@@ -721,8 +721,19 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	db.Exec("DELETE FROM comments WHERE id > 1500000")
 }
 
+func AttachProfiler(router *mux.Router) {
+	router.HandleFunc("/debug/pprof/", pprof.Index)
+	router.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	router.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	router.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	router.HandleFunc("/debug/pprof/block", pprof.Handler("block").ServeHTTP)
+	router.HandleFunc("/debug/pprof/heap", pprof.Handler("heap").ServeHTTP)
+	router.HandleFunc("/debug/pprof/goroutine", pprof.Handler("goroutine").ServeHTTP)
+	router.HandleFunc("/debug/pprof/threadcreate", pprof.Handler("threadcreate").ServeHTTP)
+}
+
 func main() {
-	defer profile.Start(profile.CPUProfile).Stop()
+
 	host := os.Getenv("ISUCON5_DB_HOST")
 	if host == "" {
 		host = "localhost"
@@ -758,6 +769,7 @@ func main() {
 	store = sessions.NewCookieStore([]byte(ssecret))
 
 	r := mux.NewRouter()
+	AttachProfiler(r)
 
 	l := r.Path("/login").Subrouter()
 	l.Methods("GET").HandlerFunc(myHandler(GetLogin))
