@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/context"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
+	"github.com/pkg/profile"
 )
 
 var (
@@ -721,6 +722,7 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	defer profile.Start(profile.CPUProfile).Stop()
 	host := os.Getenv("ISUCON5_DB_HOST")
 	if host == "" {
 		host = "localhost"
