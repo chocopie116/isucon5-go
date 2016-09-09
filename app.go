@@ -733,7 +733,7 @@ func AttachProfiler(router *mux.Router) {
 }
 
 func main() {
-
+	runtime.SetBlockProfileRate(1)
 	host := os.Getenv("ISUCON5_DB_HOST")
 	if host == "" {
 		host = "localhost"
