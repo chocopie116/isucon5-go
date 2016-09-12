@@ -794,7 +794,7 @@ func AttachProfiler(router *mux.Router) {
 
 func main() {
 	fmt.Println("start")
-	runtime.SetBlockProfileRate(1)
+	//runtime.SetBlockProfileRate(1)
 
 	ca = cache.New(5*time.Minute, 30*time.Second)
 
@@ -822,7 +822,7 @@ func main() {
 	store = sessions.NewCookieStore([]byte(ssecret))
 
 	r := mux.NewRouter()
-	AttachProfiler(r)
+	//AttachProfiler(r)
 
 	l := r.Path("/login").Subrouter()
 	l.Methods("GET").HandlerFunc(myHandler(GetLogin))
