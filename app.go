@@ -358,23 +358,31 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT * FROM entries ORDER BY created_at DESC LIMIT 1000`)
+	//友人の日記を10件取得したい
+	rows, err = db.Query(`
+SELECT
+e.id as id,
+e.user_id as user_id,
+e.private as private,
+e.body as body,
+e.created_at as created_at
+FROM entries e
+inner join relations r
+on e.user_id = r.one
+where r.another = ?
+ORDER BY e.created_at DESC LIMIT 10;
+	`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
+
 	entriesOfFriends := make([]Entry, 0, 10)
 	for rows.Next() {
 		var id, userID, private int
 		var body string
 		var createdAt time.Time
 		checkErr(rows.Scan(&id, &userID, &private, &body, &createdAt))
-		if !isFriend(w, r, userID) {
-			continue
-		}
 		entriesOfFriends = append(entriesOfFriends, Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt})
-		if len(entriesOfFriends) >= 10 {
-			break
-		}
 	}
 	rows.Close()
 
