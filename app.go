@@ -723,19 +723,8 @@ func PostFriends(w http.ResponseWriter, r *http.Request) {
 	anotherAccount := mux.Vars(r)["account_name"]
 	if !isFriendAccount(w, r, anotherAccount) {
 		another := getUserFromAccount(w, anotherAccount)
-		oneId := 0
-		anotherId := 0
 
-		//userIdの小さいほうをoneにいれて、大きいほうをanotherに入れる
-		if user.ID < another.ID {
-			oneId = user.ID
-			anotherId = another.ID
-		} else {
-			oneId = another.ID
-			anotherId = user.ID
-		}
-
-		_, err := db.Exec(`INSERT INTO relations (one, another) VALUES (?,?)`, oneId, anotherId)
+		_, err := db.Exec(`INSERT INTO relations (one, another) VALUES (?,?), (?, ?)`, user.ID, another.ID, another.ID, user.ID)
 		checkErr(err)
 		http.Redirect(w, r, "/friends", http.StatusSeeOther)
 	}
