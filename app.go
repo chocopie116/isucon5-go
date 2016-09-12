@@ -161,16 +161,7 @@ func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 	session := getSession(w, r)
 	id := session.Values["user_id"].(int)
 
-	oneId := 0
-	anotherId := 0
-	//userIdの小さいほうをoneにいれて、大きいほうをanotherに入れる
-	if id < anotherID {
-		oneId = id
-		anotherId = anotherID
-	} else {
-		oneId = anotherID
-		anotherId = id
-	}
+	oneId, anotherId := getOrderedOneAnotherId(id, anotherID)
 	key := "isFrined_" + strconv.Itoa(oneId) + "_" + strconv.Itoa(anotherId)
 
 	_, found := ca.Get(key)
@@ -754,6 +745,19 @@ func PostFriends(w http.ResponseWriter, r *http.Request) {
 		checkErr(err)
 		http.Redirect(w, r, "/friends", http.StatusSeeOther)
 	}
+}
+
+//userIdを2つわたして、oneId < anotherIdの順番で返す
+func getOrderedOneAnotherId(userIdOne int, userIdTwo int) (oneId int, anotherId int) {
+	if userIdOne < userIdTwo {
+		oneId = userIdOne
+		anotherId = userIdTwo
+	} else {
+		oneId = userIdTwo
+		anotherId = userIdOne
+	}
+
+	return oneId, anotherId
 }
 
 func GetInitialize(w http.ResponseWriter, r *http.Request) {
