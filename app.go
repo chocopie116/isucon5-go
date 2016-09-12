@@ -156,8 +156,19 @@ func getUserFromAccount(w http.ResponseWriter, name string) *User {
 
 func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 	session := getSession(w, r)
-	id := session.Values["user_id"]
-	row := db.QueryRow(`SELECT COUNT(1) AS cnt FROM relations WHERE (one = ? AND another = ?) OR (one = ? AND another = ?)`, id, anotherID, anotherID, id)
+	id := session.Values["user_id"].(int)
+
+	oneId := 0
+	anotherId := 0
+	//userIdの小さいほうをoneにいれて、大きいほうをanotherに入れる
+	if id < anotherID {
+		oneId = id
+		anotherId = anotherID
+	} else {
+		oneId = anotherID
+		anotherId = id
+	}
+	row := db.QueryRow(`SELECT COUNT(1) AS cnt FROM relations WHERE (one = ? AND another = ?)`, oneId, anotherId)
 	cnt := new(int)
 	err := row.Scan(cnt)
 	checkErr(err)
@@ -708,7 +719,19 @@ func PostFriends(w http.ResponseWriter, r *http.Request) {
 	anotherAccount := mux.Vars(r)["account_name"]
 	if !isFriendAccount(w, r, anotherAccount) {
 		another := getUserFromAccount(w, anotherAccount)
-		_, err := db.Exec(`INSERT INTO relations (one, another) VALUES (?,?), (?,?)`, user.ID, another.ID, another.ID, user.ID)
+		oneId := 0
+		anotherId := 0
+
+		//userIdの小さいほうをoneにいれて、大きいほうをanotherに入れる
+		if user.ID < another.ID {
+			oneId = user.ID
+			anotherId = another.ID
+		} else {
+			oneId = another.ID
+			anotherId = user.ID
+		}
+
+		_, err := db.Exec(`INSERT INTO relations (one, another) VALUES (?,?)`, oneId, anotherId)
 		checkErr(err)
 		http.Redirect(w, r, "/friends", http.StatusSeeOther)
 	}
