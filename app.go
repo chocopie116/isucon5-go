@@ -386,7 +386,20 @@ ORDER BY e.created_at DESC LIMIT 10;
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT * FROM comments ORDER BY created_at DESC LIMIT 1000`)
+	//友人のコメント最新10件を取得したい
+	rows, err = db.Query(`
+SELECT
+c.ID as id,
+c.entry_id as entry_id,
+c.user_id as user_id,
+c.comment as comment,
+c.created_at as created_at
+FROM comments c
+inner join relations r
+on c.user_id = r.one
+where r.another = ?
+ORDER BY c.created_at DESC LIMIT 10
+	`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
@@ -394,9 +407,6 @@ ORDER BY e.created_at DESC LIMIT 10;
 	for rows.Next() {
 		c := Comment{}
 		checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt))
-		if !isFriend(w, r, c.UserID) {
-			continue
-		}
 		row := db.QueryRow(`SELECT * FROM entries WHERE id = ?`, c.EntryID)
 		var id, userID, private int
 		var body string
