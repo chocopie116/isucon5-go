@@ -136,6 +136,15 @@ func authenticated(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func getUser(w http.ResponseWriter, userID int) *User {
+	key := fmt.Sprintf("getUser-%d", strconv.Itoa(userID))
+	//cache
+	cv, found := ca.Get(key)
+	if found {
+		user := User{}
+		user = cv.(User)
+		return &user
+	}
+
 	row := db.QueryRow(`SELECT * FROM users WHERE id = ?`, userID)
 	user := User{}
 	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email, new(string))
@@ -143,6 +152,7 @@ func getUser(w http.ResponseWriter, userID int) *User {
 		checkErr(ErrContentNotFound)
 	}
 	checkErr(err)
+	ca.Set(key, user, cache.NoExpiration)
 	return &user
 }
 
