@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -17,12 +18,14 @@ import (
 	"github.com/gorilla/context"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
+	"github.com/patrickmn/go-cache"
 )
 import "net/http/pprof"
 
 var (
 	db    *sql.DB
 	store *sessions.CookieStore
+	ca    *cache.Cache
 )
 
 type User struct {
@@ -168,11 +171,27 @@ func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 		oneId = anotherID
 		anotherId = id
 	}
+	key := "isFrined_" + strconv.Itoa(oneId) + "_" + strconv.Itoa(anotherId)
+
+	_, found := ca.Get(key)
+
+	////結果があればisFriend = true
+	if found {
+		return true
+	}
+
 	row := db.QueryRow(`SELECT COUNT(1) AS cnt FROM relations WHERE (one = ? AND another = ?)`, oneId, anotherId)
 	cnt := new(int)
 	err := row.Scan(cnt)
 	checkErr(err)
-	return *cnt > 0
+
+	//結果がある場合はisFriend = true
+	if *cnt > 0 {
+		ca.Set(key, 1, cache.NoExpiration)
+		return true
+	}
+
+	return false
 }
 
 func isFriendAccount(w http.ResponseWriter, r *http.Request, name string) bool {
@@ -756,7 +775,11 @@ func AttachProfiler(router *mux.Router) {
 }
 
 func main() {
+	fmt.Println("start")
 	runtime.SetBlockProfileRate(1)
+
+	ca = cache.New(5*time.Minute, 30*time.Second)
+
 	host := os.Getenv("ISUCON5_DB_HOST")
 	if host == "" {
 		host = "localhost"
