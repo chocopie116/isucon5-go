@@ -807,6 +807,7 @@ func AttachProfiler(router *mux.Router) {
 func main() {
 	fmt.Println("start")
 	//runtime.SetBlockProfileRate(1)
+	runtime.GOMAXPROCS(4)
 
 	ca = cache.New(5*time.Minute, 30*time.Second)
 
