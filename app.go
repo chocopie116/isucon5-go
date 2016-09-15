@@ -115,6 +115,16 @@ func getCurrentUser(w http.ResponseWriter, r *http.Request) *User {
 	if !ok || userID == nil {
 		return nil
 	}
+
+	key := "userid-" + strconv.Itoa(userID.(int))
+	cuser, found := ca.Get(key)
+
+	if found {
+		user := User{}
+		user = cuser.(User)
+		return &user
+	}
+
 	row := db.QueryRow(`SELECT id, account_name, nick_name, email FROM users WHERE id=?`, userID)
 	user := User{}
 	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email)
@@ -123,6 +133,8 @@ func getCurrentUser(w http.ResponseWriter, r *http.Request) *User {
 	}
 	checkErr(err)
 	context.Set(r, "user", user)
+	ca.Set(key, user, cache.NoExpiration)
+
 	return &user
 }
 
