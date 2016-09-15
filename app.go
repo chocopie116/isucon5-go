@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"html/template"
@@ -116,6 +117,8 @@ func getCurrentUser(w http.ResponseWriter, r *http.Request) *User {
 		return nil
 	}
 
+	w.Header().Set("Userid", strconv.Itoa(userID.(int)))
+
 	key := "userid-" + strconv.Itoa(userID.(int))
 	cuser, found := ca.Get(key)
 
@@ -148,7 +151,7 @@ func authenticated(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func getUser(w http.ResponseWriter, userID int) *User {
-	key := fmt.Sprintf("getUser-%d", strconv.Itoa(userID))
+	key := "user" + strconv.Itoa(userID)
 	//cache
 	cv, found := ca.Get(key)
 	if found {
@@ -791,6 +794,7 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	db.Exec("DELETE FROM footprints WHERE id > 500000")
 	db.Exec("DELETE FROM entries WHERE id > 500000")
 	db.Exec("DELETE FROM comments WHERE id > 1500000")
+	GetCacheLoad(w, r)
 }
 
 func AttachProfiler(router *mux.Router) {
@@ -802,6 +806,67 @@ func AttachProfiler(router *mux.Router) {
 	router.HandleFunc("/debug/pprof/heap", pprof.Handler("heap").ServeHTTP)
 	router.HandleFunc("/debug/pprof/goroutine", pprof.Handler("goroutine").ServeHTTP)
 	router.HandleFunc("/debug/pprof/threadcreate", pprof.Handler("threadcreate").ServeHTTP)
+}
+
+func GetCacheSave(w http.ResponseWriter, r *http.Request) {
+	//ベンチマークでアクセスされるuser_idの傾向みると500番以下が9割なので500番までのuser_idをcacheしておく
+	for i := 1; i < 500; i++ {
+		getUser(w, i)
+		time.Sleep(4 * time.Millisecond)
+	}
+
+	items := ca.Items()
+	err := Save("/tmp/go-cache.gob", items)
+	checkErr(err)
+
+	count := ca.ItemCount()
+	log.Printf("Saved Cache: %v", count)
+}
+
+// Encode via Gob to file
+func Save(path string, items map[string]cache.Item) error {
+	file, err := os.Create(path)
+	checkErr(err)
+	defer file.Close()
+
+	gob.Register(User{})
+	encoder := gob.NewEncoder(file)
+	err = encoder.Encode(items)
+	checkErr(err)
+
+	return err
+}
+
+func GetCacheLoad(w http.ResponseWriter, r *http.Request) {
+	items, err := Load("/tmp/go-cache.gob")
+	checkErr(err)
+
+	ca = cache.NewFrom(5*time.Minute, 5*time.Minute, items)
+
+	//cv, _ := ca.Get("user1")
+	//log.Printf("%v", cv)
+
+	//cv2, _ := ca.Get("user2")
+	//log.Printf("%v", cv2)
+
+	count := ca.ItemCount()
+	log.Printf("Loaded Cache: %v", count)
+}
+
+// Decode Gob file
+func Load(path string) (map[string]cache.Item, error) {
+	items := map[string]cache.Item{}
+
+	file, err := os.Open(path)
+	checkErr(err)
+	defer file.Close()
+
+	gob.Register(User{})
+	decoder := gob.NewDecoder(file)
+	err = decoder.Decode(&items)
+	checkErr(err)
+
+	return items, err
 }
 
 func main() {
@@ -857,6 +922,9 @@ func main() {
 
 	r.HandleFunc("/friends", myHandler(GetFriends)).Methods("GET")
 	r.HandleFunc("/friends/{account_name}", myHandler(PostFriends)).Methods("POST")
+
+	r.HandleFunc("/save", myHandler(GetCacheSave)).Methods("GET")
+	r.HandleFunc("/load", myHandler(GetCacheLoad)).Methods("GET")
 
 	r.HandleFunc("/initialize", myHandler(GetInitialize))
 	r.HandleFunc("/", myHandler(GetIndex))
