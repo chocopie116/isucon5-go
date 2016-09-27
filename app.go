@@ -935,7 +935,7 @@ func main() {
 
 	r.HandleFunc("/initialize", myHandler(GetInitialize))
 	r.HandleFunc("/", myHandler(GetIndex))
-	r.PathPrefix("/").Handler(http.FileServer(http.Dir("../static")))
+	//r.PathPrefix("/").Handler(http.FileServer(http.Dir("../static"))) //nginxで配信するようにした
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
 
