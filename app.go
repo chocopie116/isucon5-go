@@ -172,13 +172,25 @@ func getUser(w http.ResponseWriter, userID int) *User {
 }
 
 func getUserFromAccount(w http.ResponseWriter, name string) *User {
+	key := "username-" + name
+	//cache
+	cv, found := ca.Get(key)
+	if found {
+		user := User{}
+		user = cv.(User)
+		return &user
+	}
+
 	row := db.QueryRow(`SELECT * FROM users WHERE account_name = ?`, name)
 	user := User{}
 	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email, new(string))
 	if err == sql.ErrNoRows {
 		checkErr(ErrContentNotFound)
 	}
+
 	checkErr(err)
+	ca.Set(key, user, cache.NoExpiration)
+
 	return &user
 }
 
