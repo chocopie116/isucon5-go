@@ -388,17 +388,17 @@ func GetIndex(w http.ResponseWriter, r *http.Request) {
 
 	prof := *getProf(user.ID)
 
-	rows, err := db.Query(`SELECT * FROM entries WHERE user_id = ? ORDER BY created_at LIMIT 5`, user.ID)
+	rows, err := db.Query(`SELECT id, SUBSTRING_INDEX(body, '\n', 1) AS title FROM entries WHERE user_id = ? ORDER BY created_at LIMIT 5`, user.ID)
+
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
 	entries := make([]Entry, 0, 5)
 	for rows.Next() {
-		var id, userID, private int
-		var body string
-		var createdAt time.Time
-		checkErr(rows.Scan(&id, &userID, &private, &body, &createdAt))
-		entries = append(entries, Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt})
+		var id int
+		var title string
+		checkErr(rows.Scan(&id, &title))
+		entries = append(entries, Entry{ID: id, Title: title})
 	}
 	rows.Close()
 
