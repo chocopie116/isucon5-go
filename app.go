@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"encoding/gob"
 	"errors"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -17,12 +19,14 @@ import (
 	"github.com/gorilla/context"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
+	"github.com/patrickmn/go-cache"
 )
 import "net/http/pprof"
 
 var (
 	db    *sql.DB
 	store *sessions.CookieStore
+	ca    *cache.Cache
 )
 
 type User struct {
@@ -112,6 +116,18 @@ func getCurrentUser(w http.ResponseWriter, r *http.Request) *User {
 	if !ok || userID == nil {
 		return nil
 	}
+
+	w.Header().Set("Userid", strconv.Itoa(userID.(int)))
+
+	key := "userid-" + strconv.Itoa(userID.(int))
+	cuser, found := ca.Get(key)
+
+	if found {
+		user := User{}
+		user = cuser.(User)
+		return &user
+	}
+
 	row := db.QueryRow(`SELECT id, account_name, nick_name, email FROM users WHERE id=?`, userID)
 	user := User{}
 	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email)
@@ -120,6 +136,8 @@ func getCurrentUser(w http.ResponseWriter, r *http.Request) *User {
 	}
 	checkErr(err)
 	context.Set(r, "user", user)
+	ca.Set(key, user, cache.NoExpiration)
+
 	return &user
 }
 
@@ -133,6 +151,15 @@ func authenticated(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func getUser(w http.ResponseWriter, userID int) *User {
+	key := "user" + strconv.Itoa(userID)
+	//cache
+	cv, found := ca.Get(key)
+	if found {
+		user := User{}
+		user = cv.(User)
+		return &user
+	}
+
 	row := db.QueryRow(`SELECT * FROM users WHERE id = ?`, userID)
 	user := User{}
 	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email, new(string))
@@ -140,28 +167,59 @@ func getUser(w http.ResponseWriter, userID int) *User {
 		checkErr(ErrContentNotFound)
 	}
 	checkErr(err)
+	ca.Set(key, user, cache.NoExpiration)
 	return &user
 }
 
 func getUserFromAccount(w http.ResponseWriter, name string) *User {
+	key := "username-" + name
+	//cache
+	cv, found := ca.Get(key)
+	if found {
+		user := User{}
+		user = cv.(User)
+		return &user
+	}
+
 	row := db.QueryRow(`SELECT * FROM users WHERE account_name = ?`, name)
 	user := User{}
 	err := row.Scan(&user.ID, &user.AccountName, &user.NickName, &user.Email, new(string))
 	if err == sql.ErrNoRows {
 		checkErr(ErrContentNotFound)
 	}
+
 	checkErr(err)
+	ca.Set(key, user, cache.NoExpiration)
+
 	return &user
 }
 
 func isFriend(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 	session := getSession(w, r)
-	id := session.Values["user_id"]
-	row := db.QueryRow(`SELECT COUNT(1) AS cnt FROM relations WHERE (one = ? AND another = ?) OR (one = ? AND another = ?)`, id, anotherID, anotherID, id)
+	id := session.Values["user_id"].(int)
+
+	oneId, anotherId := getOrderedOneAnotherId(id, anotherID)
+	key := "isFrined_" + strconv.Itoa(oneId) + "_" + strconv.Itoa(anotherId)
+
+	_, found := ca.Get(key)
+
+	////結果があればisFriend = true
+	if found {
+		return true
+	}
+
+	row := db.QueryRow(`SELECT COUNT(1) AS cnt FROM relations WHERE (one = ? AND another = ?)`, oneId, anotherId)
 	cnt := new(int)
 	err := row.Scan(cnt)
 	checkErr(err)
-	return *cnt > 0
+
+	//結果がある場合はisFriend = true
+	if *cnt > 0 {
+		ca.Set(key, 1, cache.NoExpiration)
+		return true
+	}
+
+	return false
 }
 
 func isFriendAccount(w http.ResponseWriter, r *http.Request, name string) bool {
@@ -183,7 +241,7 @@ func permitted(w http.ResponseWriter, r *http.Request, anotherID int) bool {
 func markFootprint(w http.ResponseWriter, r *http.Request, id int) {
 	user := getCurrentUser(w, r)
 	if user.ID != id {
-		_, err := db.Exec(`INSERT INTO footprints (user_id,owner_id) VALUES (?,?)`, id, user.ID)
+		_, err := db.Exec(`replace INTO footprints (user_id,owner_id,created_at) VALUES (?,?, now())`, id, user.ID)
 		checkErr(err)
 	}
 }
@@ -254,17 +312,21 @@ func render(w http.ResponseWriter, r *http.Request, status int, file string, dat
 		},
 		"split": strings.Split,
 		"getEntry": func(id int) Entry {
-			row := db.QueryRow(`SELECT * FROM entries WHERE id=?`, id)
-			var entryID, userID, private int
-			var body string
-			var createdAt time.Time
-			checkErr(row.Scan(&entryID, &userID, &private, &body, &createdAt))
-			return Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
+			return getEntry(strconv.Itoa(id))
 		},
 		"numComments": func(id int) int {
-			row := db.QueryRow(`SELECT COUNT(*) AS c FROM comments WHERE entry_id = ?`, id)
+			key := "entry-counts-" + strconv.Itoa(id)
+			cv, found := ca.Get(key)
+			if found {
+				return cv.(int)
+			}
+
+			row := db.QueryRow(`SELECT COUNT(1) AS c FROM comments WHERE entry_id = ?`, id)
 			var n int
 			checkErr(row.Scan(&n))
+
+			ca.Set(key, n, cache.NoExpiration)
+
 			return n
 		},
 	}
@@ -292,6 +354,26 @@ func GetLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
+func getProf(userId int) *Profile {
+	key := "prof" + strconv.Itoa(userId)
+	cv, found := ca.Get(key)
+	if found {
+		prof := Profile{}
+		prof = cv.(Profile)
+		return &prof
+	}
+	prof := Profile{}
+	row := db.QueryRow(`SELECT * FROM profiles WHERE user_id = ?`, userId)
+	err := row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
+	if err != sql.ErrNoRows {
+		checkErr(err)
+	}
+
+	ca.Set(key, prof, cache.NoExpiration)
+
+	return &prof
+}
+
 func GetIndex(w http.ResponseWriter, r *http.Request) {
 	if !authenticated(w, r) {
 		return
@@ -299,24 +381,19 @@ func GetIndex(w http.ResponseWriter, r *http.Request) {
 
 	user := getCurrentUser(w, r)
 
-	prof := Profile{}
-	row := db.QueryRow(`SELECT * FROM profiles WHERE user_id = ?`, user.ID)
-	err := row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
+	prof := *getProf(user.ID)
 
-	rows, err := db.Query(`SELECT * FROM entries WHERE user_id = ? ORDER BY created_at LIMIT 5`, user.ID)
+	rows, err := db.Query(`SELECT id, SUBSTRING_INDEX(body, '\n', 1) AS title FROM entries WHERE user_id = ? ORDER BY created_at LIMIT 5`, user.ID)
+
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
 	entries := make([]Entry, 0, 5)
 	for rows.Next() {
-		var id, userID, private int
-		var body string
-		var createdAt time.Time
-		checkErr(rows.Scan(&id, &userID, &private, &body, &createdAt))
-		entries = append(entries, Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt})
+		var id int
+		var title string
+		checkErr(rows.Scan(&id, &title))
+		entries = append(entries, Entry{ID: id, Title: title})
 	}
 	rows.Close()
 
@@ -337,27 +414,48 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT * FROM entries ORDER BY created_at DESC LIMIT 1000`)
+	//友人の日記を10件取得したい
+	rows, err = db.Query(`
+SELECT
+e.id as id,
+e.user_id as user_id,
+e.private as private,
+SUBSTRING_INDEX(e.body, '\n', 1) AS title,
+e.created_at as created_at
+FROM entries e
+inner join relations r
+on e.user_id = r.one
+where r.another = ?
+ORDER BY e.created_at DESC LIMIT 10;
+	`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
+
 	entriesOfFriends := make([]Entry, 0, 10)
 	for rows.Next() {
 		var id, userID, private int
-		var body string
+		var title string
 		var createdAt time.Time
-		checkErr(rows.Scan(&id, &userID, &private, &body, &createdAt))
-		if !isFriend(w, r, userID) {
-			continue
-		}
-		entriesOfFriends = append(entriesOfFriends, Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt})
-		if len(entriesOfFriends) >= 10 {
-			break
-		}
+		checkErr(rows.Scan(&id, &userID, &private, &title, &createdAt))
+		entriesOfFriends = append(entriesOfFriends, Entry{ID: id, UserID: userID, Private: private == 1, Title: title, CreatedAt: createdAt})
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT * FROM comments ORDER BY created_at DESC LIMIT 1000`)
+	//友人のコメントで、かつコメント対象の日記を作成したユーザーと友達のものを最新10件を取得したい
+	rows, err = db.Query(`
+SELECT
+c.ID as id,
+c.entry_id as entry_id,
+c.user_id as user_id,
+c.comment as comment,
+c.created_at as created_at
+FROM comments c
+inner join relations r
+on c.user_id = r.one
+where r.another = ?
+ORDER BY c.created_at DESC LIMIT 10
+	`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
@@ -365,42 +463,19 @@ LIMIT 10`, user.ID)
 	for rows.Next() {
 		c := Comment{}
 		checkErr(rows.Scan(&c.ID, &c.EntryID, &c.UserID, &c.Comment, &c.CreatedAt))
-		if !isFriend(w, r, c.UserID) {
-			continue
-		}
-		row := db.QueryRow(`SELECT * FROM entries WHERE id = ?`, c.EntryID)
-		var id, userID, private int
-		var body string
-		var createdAt time.Time
-		checkErr(row.Scan(&id, &userID, &private, &body, &createdAt))
-		entry := Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
-		if entry.Private {
-			if !permitted(w, r, entry.UserID) {
-				continue
-			}
-		}
 		commentsOfFriends = append(commentsOfFriends, c)
-		if len(commentsOfFriends) >= 10 {
-			break
-		}
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT * FROM relations WHERE one = ? OR another = ? ORDER BY created_at DESC`, user.ID, user.ID)
+	rows, err = db.Query(`SELECT another, created_at FROM relations WHERE one = ? ORDER BY created_at DESC`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
 	friendsMap := make(map[int]time.Time)
 	for rows.Next() {
-		var id, one, another int
-		var createdAt time.Time
-		checkErr(rows.Scan(&id, &one, &another, &createdAt))
 		var friendID int
-		if one == user.ID {
-			friendID = another
-		} else {
-			friendID = one
-		}
+		var createdAt time.Time
+		checkErr(rows.Scan(&friendID, &createdAt))
 		if _, ok := friendsMap[friendID]; !ok {
 			friendsMap[friendID] = createdAt
 		}
@@ -411,11 +486,16 @@ LIMIT 10`, user.ID)
 	}
 	rows.Close()
 
-	rows, err = db.Query(`SELECT user_id, owner_id, DATE(created_at) AS date, MAX(created_at) AS updated
+	//友人の最新10件のあしあとを取得
+	rows, err = db.Query(`
+SELECT
+user_id,
+owner_id,
+created_at
 FROM footprints
 WHERE user_id = ?
-GROUP BY user_id, owner_id, DATE(created_at)
-ORDER BY updated DESC
+GROUP BY user_id, owner_id
+ORDER BY created_at DESC
 LIMIT 10`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
@@ -423,7 +503,7 @@ LIMIT 10`, user.ID)
 	footprints := make([]Footprint, 0, 10)
 	for rows.Next() {
 		fp := Footprint{}
-		checkErr(rows.Scan(&fp.UserID, &fp.OwnerID, &fp.CreatedAt, &fp.Updated))
+		checkErr(rows.Scan(&fp.UserID, &fp.OwnerID, &fp.CreatedAt))
 		footprints = append(footprints, fp)
 	}
 	rows.Close()
@@ -449,12 +529,9 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	account := mux.Vars(r)["account_name"]
 	owner := getUserFromAccount(w, account)
-	row := db.QueryRow(`SELECT * FROM profiles WHERE user_id = ?`, owner.ID)
-	prof := Profile{}
-	err := row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
+
+	prof := *getProf(owner.ID)
+
 	var query string
 	if permitted(w, r, owner.ID) {
 		query = `SELECT * FROM entries WHERE user_id = ? ORDER BY created_at LIMIT 5`
@@ -548,12 +625,18 @@ func ListEntries(w http.ResponseWriter, r *http.Request) {
 	}{owner, entries, getCurrentUser(w, r).ID == owner.ID})
 }
 
-func GetEntry(w http.ResponseWriter, r *http.Request) {
-	if !authenticated(w, r) {
-		return
+func getEntry(entryID string) Entry {
+
+	key := "entry-id-" + entryID
+	cv, found := ca.Get(key)
+	if found {
+		entry := Entry{}
+		entry = cv.(Entry)
+		return entry
 	}
-	entryID := mux.Vars(r)["entry_id"]
+
 	row := db.QueryRow(`SELECT * FROM entries WHERE id = ?`, entryID)
+
 	var id, userID, private int
 	var body string
 	var createdAt time.Time
@@ -563,6 +646,19 @@ func GetEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	checkErr(err)
 	entry := Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
+	ca.Set(key, entry, cache.NoExpiration)
+
+	return entry
+}
+
+func GetEntry(w http.ResponseWriter, r *http.Request) {
+	if !authenticated(w, r) {
+		return
+	}
+	entryID := mux.Vars(r)["entry_id"]
+
+	entry := getEntry(entryID)
+
 	owner := getUser(w, entry.UserID)
 	if entry.Private {
 		if !permitted(w, r, owner.ID) {
@@ -649,18 +745,22 @@ func GetFootprints(w http.ResponseWriter, r *http.Request) {
 
 	user := getCurrentUser(w, r)
 	footprints := make([]Footprint, 0, 50)
-	rows, err := db.Query(`SELECT user_id, owner_id, DATE(created_at) AS date, MAX(created_at) as updated
+	rows, err := db.Query(`
+SELECT
+user_id,
+owner_id,
+created_at
 FROM footprints
 WHERE user_id = ?
-GROUP BY user_id, owner_id, DATE(created_at)
-ORDER BY updated DESC
+GROUP BY user_id, owner_id
+ORDER BY created_at DESC
 LIMIT 50`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
 	for rows.Next() {
 		fp := Footprint{}
-		checkErr(rows.Scan(&fp.UserID, &fp.OwnerID, &fp.CreatedAt, &fp.Updated))
+		checkErr(rows.Scan(&fp.UserID, &fp.OwnerID, &fp.Updated))
 		footprints = append(footprints, fp)
 	}
 	rows.Close()
@@ -672,21 +772,15 @@ func GetFriends(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := getCurrentUser(w, r)
-	rows, err := db.Query(`SELECT * FROM relations WHERE one = ? OR another = ? ORDER BY created_at DESC`, user.ID, user.ID)
+	rows, err := db.Query(`SELECT another, created_at FROM relations WHERE one = ? ORDER BY created_at DESC`, user.ID)
 	if err != sql.ErrNoRows {
 		checkErr(err)
 	}
 	friendsMap := make(map[int]time.Time)
 	for rows.Next() {
-		var id, one, another int
-		var createdAt time.Time
-		checkErr(rows.Scan(&id, &one, &another, &createdAt))
 		var friendID int
-		if one == user.ID {
-			friendID = another
-		} else {
-			friendID = one
-		}
+		var createdAt time.Time
+		checkErr(rows.Scan(&friendID, &createdAt))
 		if _, ok := friendsMap[friendID]; !ok {
 			friendsMap[friendID] = createdAt
 		}
@@ -708,10 +802,24 @@ func PostFriends(w http.ResponseWriter, r *http.Request) {
 	anotherAccount := mux.Vars(r)["account_name"]
 	if !isFriendAccount(w, r, anotherAccount) {
 		another := getUserFromAccount(w, anotherAccount)
-		_, err := db.Exec(`INSERT INTO relations (one, another) VALUES (?,?), (?,?)`, user.ID, another.ID, another.ID, user.ID)
+
+		_, err := db.Exec(`INSERT INTO relations (one, another) VALUES (?,?), (?, ?)`, user.ID, another.ID, another.ID, user.ID)
 		checkErr(err)
 		http.Redirect(w, r, "/friends", http.StatusSeeOther)
 	}
+}
+
+//userIdを2つわたして、oneId < anotherIdの順番で返す
+func getOrderedOneAnotherId(userIdOne int, userIdTwo int) (oneId int, anotherId int) {
+	if userIdOne < userIdTwo {
+		oneId = userIdOne
+		anotherId = userIdTwo
+	} else {
+		oneId = userIdTwo
+		anotherId = userIdOne
+	}
+
+	return oneId, anotherId
 }
 
 func GetInitialize(w http.ResponseWriter, r *http.Request) {
@@ -719,6 +827,7 @@ func GetInitialize(w http.ResponseWriter, r *http.Request) {
 	db.Exec("DELETE FROM footprints WHERE id > 500000")
 	db.Exec("DELETE FROM entries WHERE id > 500000")
 	db.Exec("DELETE FROM comments WHERE id > 1500000")
+	GetCacheLoad(w, r)
 }
 
 func AttachProfiler(router *mux.Router) {
@@ -732,20 +841,74 @@ func AttachProfiler(router *mux.Router) {
 	router.HandleFunc("/debug/pprof/threadcreate", pprof.Handler("threadcreate").ServeHTTP)
 }
 
+func GetCacheSave(w http.ResponseWriter, r *http.Request) {
+	//ベンチマークでアクセスされるuser_idの傾向みると500番以下が9割なので500番までのuser_idをcacheしておく
+	for i := 1; i < 500; i++ {
+		getUser(w, i)
+		time.Sleep(4 * time.Millisecond)
+	}
+
+	items := ca.Items()
+	err := Save("/tmp/go-cache.gob", items)
+	checkErr(err)
+
+	count := ca.ItemCount()
+	log.Printf("Saved Cache: %v", count)
+}
+
+// Encode via Gob to file
+func Save(path string, items map[string]cache.Item) error {
+	file, err := os.Create(path)
+	checkErr(err)
+	defer file.Close()
+
+	gob.Register(User{})
+	encoder := gob.NewEncoder(file)
+	err = encoder.Encode(items)
+	checkErr(err)
+
+	return err
+}
+
+func GetCacheLoad(w http.ResponseWriter, r *http.Request) {
+	items, err := Load("/tmp/go-cache.gob")
+	checkErr(err)
+
+	ca = cache.NewFrom(5*time.Minute, 5*time.Minute, items)
+
+	//cv, _ := ca.Get("user1")
+	//log.Printf("%v", cv)
+
+	//cv2, _ := ca.Get("user2")
+	//log.Printf("%v", cv2)
+
+	count := ca.ItemCount()
+	log.Printf("Loaded Cache: %v", count)
+}
+
+// Decode Gob file
+func Load(path string) (map[string]cache.Item, error) {
+	items := map[string]cache.Item{}
+
+	file, err := os.Open(path)
+	checkErr(err)
+	defer file.Close()
+
+	gob.Register(User{})
+	decoder := gob.NewDecoder(file)
+	err = decoder.Decode(&items)
+	checkErr(err)
+
+	return items, err
+}
+
 func main() {
-	runtime.SetBlockProfileRate(1)
-	host := os.Getenv("ISUCON5_DB_HOST")
-	if host == "" {
-		host = "localhost"
-	}
-	portstr := os.Getenv("ISUCON5_DB_PORT")
-	if portstr == "" {
-		portstr = "3306"
-	}
-	port, err := strconv.Atoi(portstr)
-	if err != nil {
-		log.Fatalf("Failed to read DB port number from an environment variable ISUCON5_DB_PORT.\nError: %s", err.Error())
-	}
+	fmt.Println("start")
+	//runtime.SetBlockProfileRate(1)
+	runtime.GOMAXPROCS(4)
+
+	ca = cache.New(5*time.Minute, 30*time.Second)
+
 	user := os.Getenv("ISUCON5_DB_USER")
 	if user == "" {
 		user = "root"
@@ -760,7 +923,8 @@ func main() {
 		ssecret = "beermoris"
 	}
 
-	db, err = sql.Open("mysql", user+":"+password+"@tcp("+host+":"+strconv.Itoa(port)+")/"+dbname+"?loc=Local&parseTime=true")
+	var err error
+	db, err = sql.Open("mysql", user+":"+password+"@unix(/var/run/mysqld/mysqld.sock)/"+dbname+"?loc=Local&parseTime=true")
 	if err != nil {
 		log.Fatalf("Failed to connect to DB: %s.", err.Error())
 	}
@@ -769,7 +933,7 @@ func main() {
 	store = sessions.NewCookieStore([]byte(ssecret))
 
 	r := mux.NewRouter()
-	AttachProfiler(r)
+	//AttachProfiler(r)
 
 	l := r.Path("/login").Subrouter()
 	l.Methods("GET").HandlerFunc(myHandler(GetLogin))
@@ -792,9 +956,12 @@ func main() {
 	r.HandleFunc("/friends", myHandler(GetFriends)).Methods("GET")
 	r.HandleFunc("/friends/{account_name}", myHandler(PostFriends)).Methods("POST")
 
+	r.HandleFunc("/save", myHandler(GetCacheSave)).Methods("GET")
+	r.HandleFunc("/load", myHandler(GetCacheLoad)).Methods("GET")
+
 	r.HandleFunc("/initialize", myHandler(GetInitialize))
 	r.HandleFunc("/", myHandler(GetIndex))
-	r.PathPrefix("/").Handler(http.FileServer(http.Dir("../static")))
+	//r.PathPrefix("/").Handler(http.FileServer(http.Dir("../static"))) //nginxで配信するようにした
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
 
