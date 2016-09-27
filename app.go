@@ -534,12 +534,9 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	account := mux.Vars(r)["account_name"]
 	owner := getUserFromAccount(w, account)
-	row := db.QueryRow(`SELECT * FROM profiles WHERE user_id = ?`, owner.ID)
-	prof := Profile{}
-	err := row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
+
+	prof := *getProf(owner.ID)
+
 	var query string
 	if permitted(w, r, owner.ID) {
 		query = `SELECT * FROM entries WHERE user_id = ? ORDER BY created_at LIMIT 5`
