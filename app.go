@@ -320,9 +320,18 @@ func render(w http.ResponseWriter, r *http.Request, status int, file string, dat
 			return Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
 		},
 		"numComments": func(id int) int {
+			key := "entry-counts-" + strconv.Itoa(id)
+			cv, found := ca.Get(key)
+			if found {
+				return cv.(int)
+			}
+
 			row := db.QueryRow(`SELECT COUNT(*) AS c FROM comments WHERE entry_id = ?`, id)
 			var n int
 			checkErr(row.Scan(&n))
+
+			ca.Set(key, n, cache.NoExpiration)
+
 			return n
 		},
 	}
