@@ -326,7 +326,7 @@ func render(w http.ResponseWriter, r *http.Request, status int, file string, dat
 				return cv.(int)
 			}
 
-			row := db.QueryRow(`SELECT COUNT(*) AS c FROM comments WHERE entry_id = ?`, id)
+			row := db.QueryRow(`SELECT COUNT(1) AS c FROM comments WHERE entry_id = ?`, id)
 			var n int
 			checkErr(row.Scan(&n))
 
@@ -359,6 +359,26 @@ func GetLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
+func getProf(userId int) *Profile {
+	key := "prof" + strconv.Itoa(userId)
+	cv, found := ca.Get(key)
+	if found {
+		prof := Profile{}
+		prof = cv.(Profile)
+		return &prof
+	}
+	prof := Profile{}
+	row := db.QueryRow(`SELECT * FROM profiles WHERE user_id = ?`, userId)
+	err := row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
+	if err != sql.ErrNoRows {
+		checkErr(err)
+	}
+
+	ca.Set(key, prof, cache.NoExpiration)
+
+	return &prof
+}
+
 func GetIndex(w http.ResponseWriter, r *http.Request) {
 	if !authenticated(w, r) {
 		return
@@ -366,12 +386,7 @@ func GetIndex(w http.ResponseWriter, r *http.Request) {
 
 	user := getCurrentUser(w, r)
 
-	prof := Profile{}
-	row := db.QueryRow(`SELECT * FROM profiles WHERE user_id = ?`, user.ID)
-	err := row.Scan(&prof.UserID, &prof.FirstName, &prof.LastName, &prof.Sex, &prof.Birthday, &prof.Pref, &prof.UpdatedAt)
-	if err != sql.ErrNoRows {
-		checkErr(err)
-	}
+	prof := *getProf(user.ID)
 
 	rows, err := db.Query(`SELECT * FROM entries WHERE user_id = ? ORDER BY created_at LIMIT 5`, user.ID)
 	if err != sql.ErrNoRows {
