@@ -312,12 +312,7 @@ func render(w http.ResponseWriter, r *http.Request, status int, file string, dat
 		},
 		"split": strings.Split,
 		"getEntry": func(id int) Entry {
-			row := db.QueryRow(`SELECT * FROM entries WHERE id=?`, id)
-			var entryID, userID, private int
-			var body string
-			var createdAt time.Time
-			checkErr(row.Scan(&entryID, &userID, &private, &body, &createdAt))
-			return Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
+			return getEntry(strconv.Itoa(id))
 		},
 		"numComments": func(id int) int {
 			key := "entry-counts-" + strconv.Itoa(id)
@@ -630,12 +625,18 @@ func ListEntries(w http.ResponseWriter, r *http.Request) {
 	}{owner, entries, getCurrentUser(w, r).ID == owner.ID})
 }
 
-func GetEntry(w http.ResponseWriter, r *http.Request) {
-	if !authenticated(w, r) {
-		return
+func getEntry(entryID string) Entry {
+
+	key := "entry-id-" + entryID
+	cv, found := ca.Get(key)
+	if found {
+		entry := Entry{}
+		entry = cv.(Entry)
+		return entry
 	}
-	entryID := mux.Vars(r)["entry_id"]
+
 	row := db.QueryRow(`SELECT * FROM entries WHERE id = ?`, entryID)
+
 	var id, userID, private int
 	var body string
 	var createdAt time.Time
@@ -645,6 +646,19 @@ func GetEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	checkErr(err)
 	entry := Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt}
+	ca.Set(key, entry, cache.NoExpiration)
+
+	return entry
+}
+
+func GetEntry(w http.ResponseWriter, r *http.Request) {
+	if !authenticated(w, r) {
+		return
+	}
+	entryID := mux.Vars(r)["entry_id"]
+
+	entry := getEntry(entryID)
+
 	owner := getUser(w, entry.UserID)
 	if entry.Private {
 		if !permitted(w, r, owner.ID) {
