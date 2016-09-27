@@ -425,7 +425,7 @@ SELECT
 e.id as id,
 e.user_id as user_id,
 e.private as private,
-e.body as body,
+SUBSTRING_INDEX(e.body, '\n', 1) AS title,
 e.created_at as created_at
 FROM entries e
 inner join relations r
@@ -440,10 +440,10 @@ ORDER BY e.created_at DESC LIMIT 10;
 	entriesOfFriends := make([]Entry, 0, 10)
 	for rows.Next() {
 		var id, userID, private int
-		var body string
+		var title string
 		var createdAt time.Time
-		checkErr(rows.Scan(&id, &userID, &private, &body, &createdAt))
-		entriesOfFriends = append(entriesOfFriends, Entry{id, userID, private == 1, strings.SplitN(body, "\n", 2)[0], strings.SplitN(body, "\n", 2)[1], createdAt})
+		checkErr(rows.Scan(&id, &userID, &private, &title, &createdAt))
+		entriesOfFriends = append(entriesOfFriends, Entry{ID: id, UserID: userID, Private: private == 1, Title: title, CreatedAt: createdAt})
 	}
 	rows.Close()
 
